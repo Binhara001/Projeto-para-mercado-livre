@@ -321,8 +321,6 @@ def export_excel():
     filename = f"relatorio_ml_{data['period']['from']}_{data['period']['to']}.xlsx"
     return send_file(output, as_attachment=True, download_name=filename,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+import os
+port = int(os.environ.get("PORT",5000))
+app.run(host="0.0.0.0",port=port)
