@@ -70,9 +70,10 @@ def ml_get(path: str, params: dict = None) -> dict | None:
     return r.json() if r.ok else None
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-@app.route("/")
+@app.route('/')
 def index():
-    return send_from_directory("../frontend", "index.html")
+    frontend_path = os.path.join(os.path.dirname(__file__), '..', 'frontend')
+    return send_from_directory(frontend_path, 'index.html')
 
 @app.route("/auth/login")
 def auth_login():
