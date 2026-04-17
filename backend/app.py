@@ -72,7 +72,7 @@ def ml_get(path: str, params: dict = None) -> dict | None:
 # ── Auth ──────────────────────────────────────────────────────────────────────
 @app.route('/')
 def index():
-    with open(os.path.join(os.path.dirname(__file__), '..', 'frontend', 'index.html'), 'r', encoding='utf-8') as f:
+    with open(os.path.join(os.path.dirname(__file__),'frontend', 'index.html'), 'r', encoding='utf-8') as f:
         return f.read()
 
 @app.route("/auth/login")
