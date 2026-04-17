@@ -12,6 +12,10 @@ import io
 app = Flask(__name__, static_folder='../frontend/static', static_url_path='/static')
 CORS(app)
 
+@app.route('/')
+def index():
+    return send_from_directory('../frontend', 'index.html')
+
 # ── Configurações ─────────────────────────────────────────────────────────────
 CLIENT_ID     = os.getenv("ML_CLIENT_ID", "SEU_CLIENT_ID")
 CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "SEU_CLIENT_SECRET")
