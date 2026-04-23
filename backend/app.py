@@ -1,7 +1,12 @@
+import os
+import sys
+import logging
+import traceback
 from flask import Flask, jsonify, request, send_from_directory, send_file
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
-import os
 import json
 from datetime import datetime, timedelta
 from openpyxl import Workbook
@@ -9,9 +14,57 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import io
 
-app = Flask(__name__, static_folder='../frontend/static', static_url_path='/static')
+# === Paths absolutos a partir de __file__ (robusto a qualquer CWD) ===
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))                    # /app/backend
+FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, '..', 'frontend')) # /app/frontend
+
+# === Logging que SEMPRE aparece no Railway ===
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s %(name)s: %(message)s',
+    stream=sys.stdout,
+    force=True,
+)
+
+# === Flask app: static_folder aponta para frontend INTEIRO ===
+app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path='')
+
+# Railway faz TLS termination; confia nos headers X-Forwarded-*
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
 CORS(app)
 
+# Liga logger do Flask ao do gunicorn (sem isso, tracebacks somem)
+if __name__ != '__main__':
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    if gunicorn_logger.handlers:
+        app.logger.handlers = gunicorn_logger.handlers
+        app.logger.setLevel(gunicorn_logger.level)
+
+# Log de startup pra confirmar que paths existem (aparece no Deploy Log)
+app.logger.warning(f"BASE_DIR={BASE_DIR}")
+app.logger.warning(f"FRONTEND_DIR={FRONTEND_DIR} exists={os.path.isdir(FRONTEND_DIR)}")
+app.logger.warning(f"index.html exists={os.path.isfile(os.path.join(FRONTEND_DIR, 'index.html'))}")
+
+# === Handler global: imprime traceback completo no stdout/stderr ===
+@app.errorhandler(Exception)
+def handle_any_exception(e):
+    if isinstance(e, HTTPException):
+        return e  # preserva 404, 405, etc
+    tb = traceback.format_exc()
+    print(f"\n=== UNHANDLED EXCEPTION on {request.method} {request.path} ===\n{tb}",
+          file=sys.stderr, flush=True)
+    app.logger.error("Unhandled exception on %s %s\n%s", request.method, request.path, tb)
+    return jsonify(error=type(e).__name__, message=str(e)), 500
+
+# === Rota de health pra validar deploy ===
+@app.route('/api/health')
+def health():
+    return {
+        "ok": True,
+        "frontend_dir": FRONTEND_DIR,
+        "index_exists": os.path.isfile(os.path.join(FRONTEND_DIR, 'index.html')),
+    }
 
 # ── Configurações ─────────────────────────────────────────────────────────────
 CLIENT_ID     = os.getenv("ML_CLIENT_ID", "SEU_CLIENT_ID")
@@ -25,13 +78,13 @@ def save_tokens(data: dict):
     with open(TOKEN_FILE, "w") as f:
         json.dump(data, f)
 
-def load_tokens() -> dict | None:
+def load_tokens():
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE) as f:
             return json.load(f)
     return None
 
-def refresh_access_token(refresh_token: str) -> dict | None:
+def refresh_access_token(refresh_token: str):
     r = requests.post(f"{BASE_URL}/oauth/token", data={
         "grant_type":    "refresh_token",
         "client_id":     CLIENT_ID,
@@ -44,14 +97,13 @@ def refresh_access_token(refresh_token: str) -> dict | None:
         return tokens
     return None
 
-def get_valid_token() -> str | None:
+def get_valid_token():
     tokens = load_tokens()
     if not tokens:
         return None
-    # Tenta usar — se der 401, renova
     return tokens.get("access_token")
 
-def ml_get(path: str, params: dict = None) -> dict | None:
+def ml_get(path: str, params: dict = None):
     """GET autenticado na API do ML com auto-refresh."""
     tokens = load_tokens()
     if not tokens:
@@ -70,11 +122,6 @@ def ml_get(path: str, params: dict = None) -> dict | None:
     return r.json() if r.ok else None
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-@app.route('/')
-def index():
-    with open(os.path.join(os.path.dirname(__file__),'frontend', 'index.html'), 'r', encoding='utf-8') as f:
-        return f.read()
-
 @app.route("/auth/login")
 def auth_login():
     url = (
@@ -323,6 +370,16 @@ def export_excel():
     filename = f"relatorio_ml_{data['period']['from']}_{data['period']['to']}.xlsx"
     return send_file(output, as_attachment=True, download_name=filename,
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
- #import os
-#port = int(os.environ.get("PORT",5000))
-#app.run(host="0.0.0.0",port=port, debug=False)
+
+# ── Catch-all: serve frontend (DEVE VIR POR ÚLTIMO!) ─────────────────────────
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_frontend(path):
+    full = os.path.join(FRONTEND_DIR, path)
+    if path and os.path.isfile(full):
+        return send_from_directory(FRONTEND_DIR, path)
+    return send_from_directory(FRONTEND_DIR, 'index.html')
+
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

@@ -1,5 +1,0 @@
-[phases.build]
-cmds = ['pip install -r backend/requirements.txt']
-
-[start]
-cmd = 'python backend/app.py'
