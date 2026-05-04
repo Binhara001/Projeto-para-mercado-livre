@@ -193,20 +193,37 @@ def dashboard():
 
     seller_id = user_data["id"]
 
-    # Busca pedidos no período
-    orders_data = ml_get("/orders/search", {
-        "seller": seller_id,
-        "order.date_created.from": date_from,
-        "order.date_created.to":   date_to,
-        "sort":   "date_desc",
-        "limit":  50,
-    })
+    # ── PAGINAÇÃO: busca TODOS os pedidos do período ──
+    all_orders = []
+    offset = 0
+    page_size = 50
+    max_pages = 40  # limite de segurança: até 2000 pedidos por consulta
+    total = 0
 
-    if not orders_data:
-        return jsonify({"error": "Erro ao buscar pedidos"}), 500
+    for _ in range(max_pages):
+        orders_data = ml_get("/orders/search", {
+            "seller": seller_id,
+            "order.date_created.from": date_from,
+            "order.date_created.to":   date_to,
+            "sort":   "date_desc",
+            "limit":  page_size,
+            "offset": offset,
+        })
 
-    orders = orders_data.get("results", [])
-    total  = orders_data.get("paging", {}).get("total", 0)
+        if not orders_data:
+            return jsonify({"error": "Erro ao buscar pedidos"}), 500
+
+        results = orders_data.get("results", [])
+        total = orders_data.get("paging", {}).get("total", 0)
+        all_orders.extend(results)
+
+        # Para se já pegou tudo
+        if len(results) < page_size or len(all_orders) >= total:
+            break
+
+        offset += page_size
+
+    orders = all_orders
 
     # Agrega métricas
     total_revenue   = 0.0
