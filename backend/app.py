@@ -13,6 +13,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import io
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 # === Paths absolutos a partir de __file__ (robusto a qualquer CWD) ===
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))                    # /app/backend
@@ -72,6 +74,36 @@ CLIENT_SECRET = os.getenv("ML_CLIENT_SECRET", "SEU_CLIENT_SECRET")
 REDIRECT_URI  = os.getenv("ML_REDIRECT_URI", "http://localhost:5000/auth/callback")
 TOKEN_FILE    = "tokens.json"
 BASE_URL      = "https://api.mercadolibre.com"
+
+# ── Cache de fretes (acelera consultas repetidas) ─────────────────────────────
+SHIPMENT_CACHE_FILE = os.path.join(BASE_DIR, "shipments_cache.json")
+_cache_lock = threading.Lock()
+
+def load_shipment_cache():
+    if os.path.exists(SHIPMENT_CACHE_FILE):
+        try:
+            with open(SHIPMENT_CACHE_FILE) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_shipment_cache(cache: dict):
+    with _cache_lock:
+        with open(SHIPMENT_CACHE_FILE, "w") as f:
+            json.dump(cache, f)
+
+def get_shipping_cost(ship_id, cache: dict):
+    """Retorna custo de frete, usando cache quando possível."""
+    key = str(ship_id)
+    if key in cache:
+        return cache[key]
+    ship_data = ml_get(f"/shipments/{ship_id}")
+    if ship_data:
+        cost = float(ship_data.get("base_cost") or 0)
+        cache[key] = cost
+        return cost
+    return 0
 
 # ── Helpers de token ──────────────────────────────────────────────────────────
 def save_tokens(data: dict):
@@ -197,7 +229,7 @@ def dashboard():
     all_orders = []
     offset = 0
     page_size = 50
-    max_pages = 40  # limite de segurança: até 2000 pedidos por consulta
+    max_pages = 100  # até 5000 pedidos por consulta
     total = 0
 
     for _ in range(max_pages):
@@ -217,7 +249,6 @@ def dashboard():
         total = orders_data.get("paging", {}).get("total", 0)
         all_orders.extend(results)
 
-        # Para se já pegou tudo
         if len(results) < page_size or len(all_orders) >= total:
             break
 
@@ -225,7 +256,30 @@ def dashboard():
 
     orders = all_orders
 
-    # Agrega métricas
+    # ── BUSCA FRETES EM PARALELO (com cache) ──
+    cache = load_shipment_cache()
+    shipping_costs = {}  # order_id -> custo
+
+    def fetch_one(order):
+        oid = order.get("id")
+        shipment = order.get("shipping") or {}
+        ship_id = shipment.get("id")
+        if not ship_id:
+            return oid, 0
+        cost = get_shipping_cost(ship_id, cache)
+        return oid, cost
+
+    # Filtra só pedidos não-cancelados pra poupar chamadas
+    fetch_list = [o for o in orders if o.get("status") != "cancelled"]
+
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        for oid, cost in executor.map(fetch_one, fetch_list):
+            shipping_costs[oid] = cost
+
+    # Salva cache atualizado de uma vez
+    save_shipment_cache(cache)
+
+    # ── Agrega métricas ──
     total_revenue   = 0.0
     total_shipping  = 0.0
     paid_orders     = 0
@@ -240,17 +294,8 @@ def dashboard():
             cancelled_orders += 1
             continue
 
-        total_amount    = o.get("total_amount", 0) or 0
-        shipping_cost   = 0
-
-        # Tenta pegar custo de frete do shipment
-        shipment = o.get("shipping") or {}
-        ship_id  = shipment.get("id")
-        if ship_id:
-            ship_data = ml_get(f"/shipments/{ship_id}")
-            if ship_data:
-                base_cost = ship_data.get("base_cost") or 0
-                shipping_cost = float(base_cost)
+        total_amount  = o.get("total_amount", 0) or 0
+        shipping_cost = shipping_costs.get(o.get("id"), 0)
 
         if status == "paid":
             paid_orders    += 1
@@ -259,7 +304,6 @@ def dashboard():
         elif status in ("confirmed", "payment_required", "payment_in_process"):
             pending_orders += 1
 
-        # Itens do pedido
         for item in o.get("order_items", []):
             items_sold += item.get("quantity", 0)
 
