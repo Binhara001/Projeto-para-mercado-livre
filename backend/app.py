@@ -16,6 +16,10 @@ import io
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
+from flask import session, redirect
+from functools import wraps
+import secrets as py_secrets
+
 # === Paths absolutos a partir de __file__ (robusto a qualquer CWD) ===
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))                    # /app/backend
 FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, '..', 'frontend')) # /app/frontend
@@ -35,6 +39,25 @@ app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path='')
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 CORS(app)
+
+# ── Configuração de sessão segura ────────────────────────────────────────────
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', py_secrets.token_hex(32))
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 horas
+
+DASHBOARD_PASSWORD = os.environ.get('DASHBOARD_PASSWORD', '')
+
+def login_required(f):
+    """Decorator que protege rotas - só acessa quem tem sessão válida."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('authenticated'):
+            return jsonify({"error": "Não autorizado", "redirect": "/login"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
 
 # Liga logger do Flask ao do gunicorn (sem isso, tracebacks somem)
 if __name__ != '__main__':
@@ -153,8 +176,37 @@ def ml_get(path: str, params: dict = None):
 
     return r.json() if r.ok else None
 
+# ── Login do Dashboard ────────────────────────────────────────────────────────
+@app.route("/api/dashboard-login", methods=["POST"])
+def dashboard_login():
+    """Valida senha de acesso ao dashboard."""
+    data = request.get_json() or {}
+    password = data.get("password", "")
+    
+    if not DASHBOARD_PASSWORD:
+        return jsonify({"error": "Senha não configurada no servidor"}), 500
+    
+    if password == DASHBOARD_PASSWORD:
+        session.permanent = True
+        session['authenticated'] = True
+        return jsonify({"success": True})
+    
+    return jsonify({"error": "Senha incorreta"}), 401
+
+@app.route("/api/dashboard-logout", methods=["POST"])
+def dashboard_logout():
+    """Limpa sessão e desloga."""
+    session.clear()
+    return jsonify({"success": True})
+
+@app.route("/api/dashboard-check")
+def dashboard_check():
+    """Verifica se a sessão tá válida."""
+    return jsonify({"authenticated": bool(session.get('authenticated'))})
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 @app.route("/auth/login")
+@login_required
 def auth_login():
     url = (
         f"https://auth.mercadolivre.com.br/authorization"
@@ -191,6 +243,7 @@ def auth_callback():
     """
 
 @app.route("/auth/status")
+@login_required
 def auth_status():
     tokens = load_tokens()
     if not tokens:
@@ -209,6 +262,7 @@ def auth_status():
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 @app.route("/api/dashboard")
+@login_required
 def dashboard():
     date_from = request.args.get("date_from")
     date_to   = request.args.get("date_to")
@@ -335,6 +389,7 @@ def dashboard():
 
 # ── Exportar Excel ────────────────────────────────────────────────────────────
 @app.route("/api/export/excel")
+@login_required
 def export_excel():
     date_from = request.args.get("date_from", datetime.now().strftime("%Y-%m-%dT00:00:00.000-03:00"))
     date_to   = request.args.get("date_to",   datetime.now().strftime("%Y-%m-%dT23:59:59.000-03:00"))

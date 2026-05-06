@@ -208,10 +208,33 @@
     <div class="logo-dot"></div>
     ML Dashboard
   </div>
+  <div style="display:flex;gap:12px;align-items:center">
   <div id="user-info" class="user-badge hidden">
     <span>👤</span> <strong id="user-name">—</strong>
   </div>
+  <button id="btn-logout" onclick="doDashboardLogout()" class="btn btn-outline hidden" style="padding:6px 14px;font-size:.85rem">
+    🚪 Sair
+  </button>
+</div>
 </header>
+<!-- LOGIN DASHBOARD -->
+<div id="login-screen" style="display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:20px;padding:32px;background:var(--bg);">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:40px;max-width:400px;width:100%;text-align:center;">
+    <div style="font-size:3rem;margin-bottom:8px">🔐</div>
+    <h2 style="font-size:1.6rem;font-weight:800;margin-bottom:8px">ML Dashboard</h2>
+    <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px">Digite a senha para acessar</p>
+    
+    <input type="password" id="login-password" placeholder="Senha de acesso"
+      style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:12px 16px;font-family:'DM Mono',monospace;font-size:.95rem;margin-bottom:12px"
+      onkeydown="if(event.key==='Enter')doDashboardLogin()"/>
+    
+    <button class="btn btn-primary" onclick="doDashboardLogin()" style="width:100%;padding:12px">
+      Entrar →
+    </button>
+    
+    <div id="login-error" style="color:var(--danger);font-size:.85rem;margin-top:14px;min-height:20px"></div>
+  </div>
+</div>
 
 <!-- AUTH -->
 <div id="auth-screen">
@@ -276,6 +299,66 @@
 const API = '';
 let currentData = null;
 
+// ── Auth do Dashboard ────────────────────────────────────────────────────────
+async function checkDashboardAuth() {
+  try {
+    const r = await fetch(`${API}/api/dashboard-check`);
+    const d = await r.json();
+    if (d.authenticated) {
+      document.getElementById('login-screen').style.display = 'none';
+      checkAuth();
+    } else {
+      showLoginScreen();
+    }
+  } catch(e) {
+    showLoginScreen();
+  }
+}
+
+function showLoginScreen() {
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('auth-screen').classList.add('hidden');
+  document.getElementById('dashboard').classList.add('hidden');
+  document.querySelector('header').style.display = 'none';
+  setTimeout(() => document.getElementById('login-password').focus(), 100);
+}
+
+async function doDashboardLogin() {
+  const password = document.getElementById('login-password').value;
+  const errorEl = document.getElementById('login-error');
+  errorEl.textContent = '';
+  
+  if (!password) {
+    errorEl.textContent = 'Digite a senha';
+    return;
+  }
+  
+  try {
+    const r = await fetch(`${API}/api/dashboard-login`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password})
+    });
+    const d = await r.json();
+    
+    if (d.success) {
+      document.getElementById('login-screen').style.display = 'none';
+      document.querySelector('header').style.display = 'flex';
+      document.getElementById('login-password').value = '';
+      checkAuth();
+    } else {
+      errorEl.textContent = d.error || 'Senha incorreta';
+    }
+  } catch(e) {
+    errorEl.textContent = 'Erro ao conectar com o servidor';
+  }
+}
+
+async function doDashboardLogout() {
+  await fetch(`${API}/api/dashboard-logout`, {method: 'POST'});
+  location.reload();
+}
+
 // ── Helpers de data ──────────────────────────────────────────────────────────
 function fmt(d) { return d.toISOString().split('T')[0]; }
 
@@ -325,6 +408,7 @@ async function checkAuth() {
       document.getElementById('auth-screen').classList.add('hidden');
       document.getElementById('dashboard').classList.remove('hidden');
       document.getElementById('user-info').classList.remove('hidden');
+      document.getElementById('btn-logout').classList.remove('hidden');
       document.getElementById('user-name').textContent = d.user.nickname;
       setQuick('today', document.querySelector('.qf'));
       loadDashboard();
@@ -469,7 +553,7 @@ async function exportExcel() {
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-checkAuth();
+checkDashboardAuth();
 </script>
 </body>
 </html>
